@@ -78,11 +78,18 @@ describe "Bitcoin::Builder" do
     tx2 = build_tx do |t|
       t.input {|i| i.prev_out @block.tx[0], 0; i.signature_key @keys[0] }
       t.output {|o| o.value 123; o.script {|s| s.recipient @keys[1].addr } }
+      t.output {|o| o.to @keys[1].addr; o.value 321 }
+      t.output {|o| o.to "deadbeef", :op_return }
     end
     tx2.in[0].prev_out.should == tx.in[0].prev_out
     tx2.in[0].prev_out_index.should == tx.in[0].prev_out_index
     tx2.out[0].value.should == tx.out[0].value
     tx2.out[0].pk_script.should == tx.out[0].pk_script
+    Bitcoin::Script.new(tx2.out[0].pk_script).to_string.should ==
+      "OP_DUP OP_HASH160 #{@keys[1].hash160} OP_EQUALVERIFY OP_CHECKSIG"
+    Bitcoin::Script.new(tx2.out[0].pk_script).to_string.should ==
+      "OP_DUP OP_HASH160 #{@keys[1].hash160} OP_EQUALVERIFY OP_CHECKSIG"
+    tx2.out[2].value.should == 0
   end
 
   it "should allow txin.prev_out as tx or hash" do
@@ -199,6 +206,41 @@ describe "Bitcoin::Builder" do
     end
     tx.out.size.should == 50
     tx.out.map(&:value).inject(:+).should == 50e8 - 10000
+  end
+
+  it "randomize_outputs should not modify output values or fees" do
+    change_address = Bitcoin::Key.generate.addr
+    tx = build_tx(input_value: @block.tx[0].out.map(&:value).inject(:+),
+                  change_address: change_address, leave_fee: true) do |t|
+      t.input {|i| i.prev_out @block.tx[0]; i.prev_out_index 0; i.signature_key @keys[0] }
+      t.output {|o| o.value 12345; o.script {|s| s.recipient @keys[1].addr } }
+      t.randomize_outputs
+    end
+
+    tx.out.count.should == 2
+    tx.out.last.value.should == 50e8 - 12345 - Bitcoin.network[:min_tx_fee]
+    Bitcoin::Script.new(tx.out.last.pk_script).get_address.should == change_address
+
+    tx = build_tx(input_value: @block.tx[0].out.map(&:value).inject(:+),
+                  change_address: change_address, leave_fee: true) do |t|
+      t.input {|i| i.prev_out @block.tx[0]; i.prev_out_index 0; i.signature_key @keys[0] }
+      49.times { t.output {|o| o.value 1e8; o.script {|s| s.recipient @keys[1].addr } } }
+      t.output {|o| o.value(1e8 - 10000); o.script {|s| s.recipient @keys[1].addr } }
+      t.randomize_outputs
+    end
+    tx.out.size.should == 50
+    tx.out.map(&:value).inject(:+).should == 50e8 - 10000
+  end
+
+  it "should build op_return output" do
+    builder = TxOutBuilder.new
+    builder.to "deadbeef", :op_return
+    builder.txout.parsed_script.to_string.should == "OP_RETURN deadbeef"
+  end
+
+  it "should build op_return script" do
+    s = script {|s| s.type :op_return; s.recipient "deadbeef" }
+    Bitcoin::Script.new(s).to_string.should == "OP_RETURN deadbeef"
   end
 
   it "should build address script" do

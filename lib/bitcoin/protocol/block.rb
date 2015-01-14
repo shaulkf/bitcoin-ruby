@@ -56,7 +56,7 @@ module Bitcoin
       end
 
       # create block from raw binary +data+
-      def initialize(data)
+      def initialize(data=nil)
         @tx = []
         parse_data_from_io(data) if data
       end
@@ -73,7 +73,7 @@ module Bitcoin
         @ver, @prev_block, @mrkl_root, @time, @bits, @nonce = buf.read(80).unpack("Va32a32VVV")
         recalc_block_hash
 
-        if Bitcoin.network[:project] == :namecoin && (@ver & BLOCK_VERSION_AUXPOW) > 0
+        if Bitcoin.network[:auxpow_chain_id] != nil && (@ver & BLOCK_VERSION_AUXPOW) > 0
           @aux_pow = AuxPow.new(nil)
           @aux_pow.parse_data_from_io(buf)
         end
@@ -197,7 +197,7 @@ module Bitcoin
           end
           @aux_pow = AuxPow.from_hash(h['aux_pow'])  if h['aux_pow']
           h['tx'].each{|tx| @tx << Tx.from_hash(tx) }
-          if h['tx'].any? && !Bitcoin.freicoin?
+          if h['tx'].any?
             (raise "Block merkle root mismatch! Block: #{h['hash']}"  unless verify_mrkl_root) if do_raise
           end
         }

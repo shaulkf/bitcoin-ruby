@@ -124,11 +124,123 @@ describe 'Tx' do
     # coinbase tx with non-default sequence
     tx = Tx.from_json( json=fixtures_file('0961c660358478829505e16a1f028757e54b5bbf9758341a7546573738f31429.json'))
     Tx.new( tx.to_payload ).to_json.should == json
+
+    # toshi format
+    Tx.from_json(fixtures_file('rawtx-02-toshi.json')).to_payload.should == Tx.from_json(fixtures_file('rawtx-02.json')).to_payload
+    Tx.from_json(fixtures_file('rawtx-03-toshi.json')).to_payload.should == Tx.from_json(fixtures_file('rawtx-03.json')).to_payload
+    Tx.from_json(fixtures_file('coinbase-toshi.json')).to_payload.should == Tx.from_json(fixtures_file('coinbase.json')).to_payload
   end
 
   it 'Tx.binary_from_json' do
     Tx.binary_from_json( fixtures_file('rawtx-2f4a2717ec8c9f077a87dde6cbe0274d5238793a3f3f492b63c744837285e58a.json') ).should ==
       fixtures_file('rawtx-2f4a2717ec8c9f077a87dde6cbe0274d5238793a3f3f492b63c744837285e58a.bin')
+  end
+  
+  it 'compares arrays of bytes' do
+    # This function is used in validating an ECDSA signature's S value
+    c1 = []
+    c2 = []
+    Bitcoin::Script::compare_big_endian(c1, c2).should == 0
+    
+    c1 = [0]
+    c2 = []
+    Bitcoin::Script::compare_big_endian(c1, c2).should == 0
+    
+    c1 = []
+    c2 = [0]
+    Bitcoin::Script::compare_big_endian(c1, c2).should == 0
+    
+    c1 = [5]
+    c2 = [5]
+    Bitcoin::Script::compare_big_endian(c1, c2).should == 0
+    
+    c1 = [04]
+    c2 = [5]
+    Bitcoin::Script::compare_big_endian(c1, c2).should == -1
+    
+    c1 = [4]
+    c2 = [05]
+    Bitcoin::Script::compare_big_endian(c1, c2).should == -1
+    
+    c1 = [5]
+    c2 = [4]
+    Bitcoin::Script::compare_big_endian(c1, c2).should == 1
+    
+    c1 = [05]
+    c2 = [004]
+    Bitcoin::Script::compare_big_endian(c1, c2).should == 1
+
+  end
+
+  it 'validates ECDSA signature format' do
+    # TX 3da75972766f0ad13319b0b461fd16823a731e44f6e9de4eb3c52d6a6fb6c8ae
+    sig_orig = ["304502210088984573e3e4f33db7df6aea313f1ce67a3ef3532ea89991494c7f018258371802206ceefc9291450dbd40d834f249658e0f64662d52a41cf14e20c9781144f2fe0701"].pack("H*")
+    Bitcoin::Script::is_der_signature?(sig_orig).should == true
+    Bitcoin::Script::is_defined_hashtype_signature?(sig_orig).should == true
+
+    # Trimmed to be too short
+    sig = sig_orig.slice(0, 8)
+    Bitcoin::Script::is_der_signature?(sig).should == false
+
+    # Zero-padded to be too long
+    sig = String.new(sig_orig)
+    sig << 0x00
+    sig << 0x00
+    Bitcoin::Script::is_der_signature?(sig).should == false
+
+    # Wrong first byte
+    sig_bytes = sig_orig.unpack("C*")
+    sig_bytes[0] = 0x20
+    sig = sig_bytes.pack("C*")
+    Bitcoin::Script::is_der_signature?(sig).should == false
+
+    # Length byte broken
+    sig_bytes = sig_orig.unpack("C*")
+    sig_bytes[1] = 0x20
+    sig = sig_bytes.pack("C*")
+    Bitcoin::Script::is_der_signature?(sig).should == false
+
+    # Incorrect R value type
+    sig_bytes = sig_orig.unpack("C*")
+    sig_bytes[2] = 0x03
+    sig = sig_bytes.pack("C*")
+    Bitcoin::Script::is_der_signature?(sig).should == false
+
+    # R value length infeasibly long
+    sig_bytes = sig_orig.unpack("C*")
+    sig_bytes[3] = sig_orig.size - 4
+    sig = sig_bytes.pack("C*")
+    Bitcoin::Script::is_der_signature?(sig).should == false
+
+    # Negative R value
+    sig_bytes = sig_orig.unpack("C*")
+    sig_bytes[4] = 0x80 | sig_bytes[4]
+    sig = sig_bytes.pack("C*")
+    Bitcoin::Script::is_der_signature?(sig).should == false
+
+    # R value excessively padded
+    sig_bytes = sig_orig.unpack("C*")
+    sig_bytes[5] = 0x00
+    sig = sig_bytes.pack("C*")
+    Bitcoin::Script::is_der_signature?(sig).should == false
+
+    # Incorrect S value type
+    sig_bytes = sig_orig.unpack("C*")
+    sig_bytes[37] = 0x03
+    sig = sig_bytes.pack("C*")
+    Bitcoin::Script::is_der_signature?(sig).should == false
+
+    # Zero S length
+    sig_bytes = sig_orig.unpack("C*")
+    sig_bytes[38] = 0x00
+    sig = sig_bytes.pack("C*")
+    Bitcoin::Script::is_der_signature?(sig).should == false
+
+    # Negative S value
+    sig_bytes = sig_orig.unpack("C*")
+    sig_bytes[39] = 0x80 | sig_bytes[39]
+    sig = sig_bytes.pack("C*")
+    Bitcoin::Script::is_der_signature?(sig).should == false
   end
 
   it '#verify_input_signature' do
@@ -222,6 +334,13 @@ describe 'Tx' do
     outpoint_tx.hash.should == "a955032f4d6b0c9bfe8cad8f00a8933790b9c1dc28c82e0f48e75b35da0e4944"
     tx.verify_input_signature(0, outpoint_tx).should == true
 
+    # drop multisig OP_CODESEPARATOR in subscript for signature_hash_for_input when used in ScriptSig
+    tx = Bitcoin::P::Tx.from_json(fixtures_file('tx-eb3b82c0884e3efa6d8b0be55b4915eb20be124c9766245bcc7f34fdac32bccb.json'))
+    tx.hash.should == "eb3b82c0884e3efa6d8b0be55b4915eb20be124c9766245bcc7f34fdac32bccb"
+    outpoint_tx = Bitcoin::P::Tx.from_json(fixtures_file('tx-b8fd633e7713a43d5ac87266adc78444669b987a56b3a65fb92d58c2c4b0e84d.json'))
+    outpoint_tx.hash.should == "b8fd633e7713a43d5ac87266adc78444669b987a56b3a65fb92d58c2c4b0e84d"
+    tx.verify_input_signature(1, outpoint_tx).should == true
+
     # OP_DUP OP_HASH160
     tx = Bitcoin::P::Tx.from_json(fixtures_file('tx-5df1375ffe61ac35ca178ebb0cab9ea26dedbd0e96005dfcee7e379fa513232f.json'))
     tx.hash.should == "5df1375ffe61ac35ca178ebb0cab9ea26dedbd0e96005dfcee7e379fa513232f"
@@ -231,6 +350,46 @@ describe 'Tx' do
     outpoint_tx = Bitcoin::P::Tx.from_json(fixtures_file('tx-ab9805c6d57d7070d9a42c5176e47bb705023e6b67249fb6760880548298e742.json'))
     outpoint_tx.hash.should == "ab9805c6d57d7070d9a42c5176e47bb705023e6b67249fb6760880548298e742"
     tx.verify_input_signature(1, outpoint_tx).should == true
+
+    # testnet3 e335562f7e297aadeed88e5954bc4eeb8dc00b31d829eedb232e39d672b0c009
+    tx = Bitcoin::P::Tx.from_json(fixtures_file('tx-e335562f7e297aadeed88e5954bc4eeb8dc00b31d829eedb232e39d672b0c009.json'))
+    tx.hash.should == "e335562f7e297aadeed88e5954bc4eeb8dc00b31d829eedb232e39d672b0c009"
+    prev_txs = {}
+    tx.in.map{|i| i.previous_output }.uniq.each{|i| prev_txs[i] = Bitcoin::P::Tx.from_json(fixtures_file("tx-#{i}.json")) }
+    tx.in.each.with_index{|i,idx|
+      tx.verify_input_signature(idx, prev_txs[i.previous_output]).should == true
+    }
+
+    unless ENV['USE_BITCOINCONSENSUS'] # TODO: fix
+      # BIP62 rule #2
+      tx = Bitcoin::Protocol::Tx.from_json(fixtures_file('0f24294a1d23efbb49c1765cf443fba7930702752aba6d765870082fe4f13cae.json'))
+      tx.hash.should == '0f24294a1d23efbb49c1765cf443fba7930702752aba6d765870082fe4f13cae'
+      outpoint_tx = Bitcoin::Protocol::Tx.from_json(fixtures_file('aea682d68a3ea5e3583e088dcbd699a5d44d4b083f02ad0aaf2598fe1fa4dfd4.json'))
+      outpoint_tx.hash.should == 'aea682d68a3ea5e3583e088dcbd699a5d44d4b083f02ad0aaf2598fe1fa4dfd4'
+      tx.verify_input_signature(0, outpoint_tx, Time.now.to_i, verify_sigpushonly: true).should == false
+    end
+
+    # BIP62 rule #6 - this is the same transaction from OP_CHECKSIG with OP_0, but with stricter checks
+    tx = Bitcoin::P::Tx.from_json(fixtures_file('tx-9fb65b7304aaa77ac9580823c2c06b259cc42591e5cce66d76a81b6f51cc5c28.json'))
+    tx.hash.should == "9fb65b7304aaa77ac9580823c2c06b259cc42591e5cce66d76a81b6f51cc5c28"
+    outpoint_tx = Bitcoin::P::Tx.from_json(fixtures_file('tx-a6ce7081addade7676cd2af75c4129eba6bf5e179a19c40c7d4cf6a5fe595954.json'))
+    outpoint_tx.hash.should == "a6ce7081addade7676cd2af75c4129eba6bf5e179a19c40c7d4cf6a5fe595954"
+    tx.verify_input_signature(0, outpoint_tx, Time.now.to_i, verify_cleanstack: true).should == false
+
+    # Ensure BIP62 is applied to P2SH scripts
+    tx = Bitcoin::P::Tx.from_json(fixtures_file('7208e5edf525f04e705fb3390194e316205b8f995c8c9fcd8c6093abe04fa27d.json'))
+    tx.hash.should == "7208e5edf525f04e705fb3390194e316205b8f995c8c9fcd8c6093abe04fa27d"
+    outpoint_tx = Bitcoin::P::Tx.from_json(fixtures_file('3e58b7eed0fdb599019af08578effea25c8666bbe8e200845453cacce6314477.json'))
+    outpoint_tx.hash.should == "3e58b7eed0fdb599019af08578effea25c8666bbe8e200845453cacce6314477"
+    tx.verify_input_signature(0, outpoint_tx).should == true
+    tx.verify_input_signature(0, outpoint_tx, Time.now.to_i, verify_low_s: true).should == false
+
+    # testnet3 P2SH check
+    tx = Bitcoin::P::Tx.from_json(fixtures_file('156e6e1b84c5c3bd3a0927b25e4119fadce6e6d5186f363317511d1d680fae9a.json'))
+    tx.hash.should == "156e6e1b84c5c3bd3a0927b25e4119fadce6e6d5186f363317511d1d680fae9a"
+    outpoint_tx = Bitcoin::P::Tx.from_json(fixtures_file('8d0b238a06b5a70be75d543902d02d7a514d68d3252a949a513865ac3538874c.json'))
+    outpoint_tx.hash.should == "8d0b238a06b5a70be75d543902d02d7a514d68d3252a949a513865ac3538874c"
+    tx.verify_input_signature(0, outpoint_tx).should == true
   end
 
   it '#sign_input_signature' do

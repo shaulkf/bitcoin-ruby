@@ -106,14 +106,15 @@ module Bitcoin::Network
 
     def set_store
       backend, config = @config[:storage].split('::')
-      @store = Bitcoin::Storage.send(backend, {
-          db: config, mode: @config[:mode], cache_head: @config[:cache_head],
-          skip_validation: @config[:skip_validation], index_nhash: @config[:index_nhash],
-          index_p2sh_type: @config[:index_p2sh_type],
-          log_level: @config[:log][:storage]}, ->(locator) {
-          peer = @connections.select(&:connected?).sample
-          peer.send_getblocks(locator)
-        })
+      @store = Bitcoin::Storage.create_store(backend, {
+        db: config,
+        mode: @config[:mode],
+        cache_head: @config[:cache_head],
+        skip_validation: @config[:skip_validation],
+        index_nhash: @config[:index_nhash],
+        index_p2sh_type: @config[:index_p2sh_type],
+        log_level: @config[:log][:storage]
+      })
       @store.log.level = @config[:log][:storage]
       @store.check_consistency(@config[:check_blocks])
       if @config[:import]
@@ -280,6 +281,10 @@ module Bitcoin::Network
           new_main.each {|b| @log.debug { "new main: #{b}" } }
           new_side.each {|b| @log.debug { "new side: #{b}" } }
           push_notification(:reorg, [new_main, new_side])
+          new_main.each do |hash|
+            blk = @store.get_block(hash)
+            push_notification(:block, [blk, blk.depth, 0])
+          end
         end
 
       end

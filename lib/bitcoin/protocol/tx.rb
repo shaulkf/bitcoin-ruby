@@ -44,6 +44,7 @@ module Bitcoin
       # create tx from raw binary +data+
       def initialize(data=nil)
         @ver, @lock_time, @in, @out, @scripts = 1, 0, [], [], []
+        @enable_bitcoinconsensus = !!ENV['USE_BITCOINCONSENSUS']
         parse_data_from_io(data) if data
       end
 
@@ -160,7 +161,13 @@ module Bitcoin
       # verify input signature +in_idx+ against the corresponding
       # output in +outpoint_tx+
       # outpoint
-      def verify_input_signature(in_idx, outpoint_tx_or_script, block_timestamp=Time.now.to_i)
+      #
+      # options are: verify_sigpushonly, verify_minimaldata, verify_cleanstack, verify_dersig, verify_low_s, verify_strictenc
+      def verify_input_signature(in_idx, outpoint_tx_or_script, block_timestamp=Time.now.to_i, opts={})
+        if @enable_bitcoinconsensus
+          return bitcoinconsensus_verify_script(in_idx, outpoint_tx_or_script, block_timestamp, opts)
+        end
+
         outpoint_idx  = @in[in_idx].prev_out_index
         script_sig    = @in[in_idx].script_sig
         
@@ -173,10 +180,39 @@ module Bitcoin
         end
 
         @scripts[in_idx] = Bitcoin::Script.new(script_sig, script_pubkey)
-        @scripts[in_idx].run(block_timestamp) do |pubkey,sig,hash_type,subscript|
+        return false if opts[:verify_sigpushonly] && !@scripts[in_idx].is_push_only?
+        return false if opts[:verify_minimaldata] && !@scripts[in_idx].pushes_are_canonical?
+        sig_valid = @scripts[in_idx].run(block_timestamp, opts) do |pubkey,sig,hash_type,subscript|
           hash = signature_hash_for_input(in_idx, subscript, hash_type)
           Bitcoin.verify_signature( hash, sig, pubkey.unpack("H*")[0] )
         end
+        # BIP62 rule #6
+        return false if opts[:verify_cleanstack] && !@scripts[in_idx].stack.empty?
+
+        return sig_valid
+      end
+
+      def bitcoinconsensus_verify_script(in_idx, outpoint_tx_or_script, block_timestamp=Time.now.to_i, opts={})
+        raise "Bitcoin::BitcoinConsensus shared library not found" unless Bitcoin::BitcoinConsensus.lib_available?
+
+        # If given an entire previous transaction, take the script from it
+        script_pubkey = if outpoint_tx_or_script.respond_to?(:out)
+          outpoint_idx  = @in[in_idx].prev_out_index
+          outpoint_tx_or_script.out[outpoint_idx].pk_script
+        else
+          # Otherwise, it's already a script.
+          outpoint_tx_or_script
+        end
+
+        flags  = Bitcoin::BitcoinConsensus::SCRIPT_VERIFY_NONE
+        flags |= Bitcoin::BitcoinConsensus::SCRIPT_VERIFY_P2SH        if block_timestamp >= 1333238400
+        flags |= Bitcoin::BitcoinConsensus::SCRIPT_VERIFY_SIGPUSHONLY if opts[:verify_sigpushonly]
+        flags |= Bitcoin::BitcoinConsensus::SCRIPT_VERIFY_MINIMALDATA if opts[:verify_minimaldata]
+        flags |= Bitcoin::BitcoinConsensus::SCRIPT_VERIFY_CLEANSTACK  if opts[:verify_cleanstack]
+        flags |= Bitcoin::BitcoinConsensus::SCRIPT_VERIFY_LOW_S       if opts[:verify_low_s]
+
+        payload ||= to_payload
+        Bitcoin::BitcoinConsensus.verify_script(in_idx, script_pubkey, payload, flags)
       end
 
       # convert to ruby hash (see also #from_hash)
@@ -206,9 +242,11 @@ module Bitcoin
       # parse ruby hash (see also #to_hash)
       def self.from_hash(h)
         tx = new(nil)
-        tx.ver, tx.lock_time = *h.values_at('ver', 'lock_time')
-        h['in'] .each{|input|   tx.add_in  TxIn.from_hash(input)   }
-        h['out'].each{|output|  tx.add_out TxOut.from_hash(output) }
+        tx.ver, tx.lock_time = (h['ver'] || h['version']), h['lock_time']
+        ins  = h['in']  || h['inputs']
+        outs = h['out'] || h['outputs']
+        ins .each{|input|   tx.add_in  TxIn.from_hash(input)   }
+        outs.each{|output|  tx.add_out TxOut.from_hash(output) }
         tx.instance_eval{ @hash = hash_from_payload(@payload = to_payload) }
         tx
       end

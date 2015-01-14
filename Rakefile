@@ -28,6 +28,7 @@ task :bacon do
 
   specs = PROJECT_SPECS
   #specs.delete_if{|i| File.basename(i) == 'storage_spec.rb' } # skip for now
+  specs.delete_if{|i| File.basename(i) == 'secp256k1_spec.rb' } # skip for now
 
   # E.g. SPEC=specs/bitcoin/script/ to run script-related specs only.
   if spec_mask = ENV["SPEC"]
@@ -97,7 +98,7 @@ end
 desc 'Generate RDoc documentation'
 task :rdoc do
   `rm -rf rdoc`
-  system("rdoc -a -A -H -t 'bitcoin-ruby RDoc' -W 'http://github.com/mhanne/bitcoin-ruby/tree/master/%s' -o rdoc -m README.rdoc examples/ doc/ lib/ README.rdoc COPYING")
+  system("rdoc -a -A -H -t 'bitcoin-ruby RDoc' -W 'https://github.com/mhanne/bitcoin-ruby/tree/master/%s' -o rdoc -m README.rdoc examples/ doc/ lib/ README.rdoc COPYING")
 end
 
 desc 'Generate test coverage report'
